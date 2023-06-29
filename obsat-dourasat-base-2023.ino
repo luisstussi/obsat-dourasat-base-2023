@@ -23,6 +23,8 @@
 
 #define MPU6050_DEVICE_ID 0x68 // Define o valor correto do valor MPU6050_WHO_AM_I
 
+#define LED 2
+
 //----- Pinos de Controle do LoRa -----//
 /*
 #define ss 5 // CHIP SELECT do LoRa - RA02
@@ -49,8 +51,8 @@ Adafruit_MPU6050 mpu;    // Declara o sensor Acelerômetro e Giroscópio
 Adafruit_BMP085 bmp_ext; // Declara o sensor de Pressão Barométrica
 WiFiMulti wifiMulti;     // Declara a biblioteca de multiplas conexões WiFi
 
-const int CS = 2;        // Declara o pino do Chip Select do cartão SD
-const int BAT = 2;       // Pino da bateria
+const int CS = 13;       // Declara o pino do Chip Select do cartão SD
+const int BAT = 4;       // Pino da bateria
 const char* ssid = "StussiMi9Pro"; // Declara o nome da rede WiFi que irá se conectar
 const char* password_wifi = "1234567890"; // Declara a senha da rede WiFi que irá se conectar
 
@@ -100,6 +102,52 @@ void ReadFile(const char * path){
   else {
     Serial.println("error opening test.txt");
   }
+}
+
+void TransmissaoWifi(String urlServer, int bat, int tmp, int pres, float rx, float ry, float rz, float ax, float ay, float az, float tens, float corr, float rad, float luv, float temp){
+    HTTPClient http;   
+     
+    http.begin(urlServer);  
+    http.addHeader("Content-Type", "application/json");         
+       
+    StaticJsonDocument<384> doc;
+  
+    doc["equipe"] = 1;
+    doc["bateria"] = bat;
+    doc["temperatura"] = tmp;
+    doc["pressao"] = pres;
+    
+    JsonArray giroscopio = doc.createNestedArray("giroscopio");
+    giroscopio.add(rx);
+    giroscopio.add(ry);
+    giroscopio.add(rz);
+    
+    JsonArray acelerometro = doc.createNestedArray("acelerometro");
+    acelerometro.add(ax);
+    acelerometro.add(ay);
+    acelerometro.add(az);
+    
+    JsonObject payload = doc.createNestedObject("payload");
+    payload["tens"] = tens;
+    payload["corr"] = corr;
+    payload["rad"] = rad;
+    payload["luv"] = luv;
+    payload["temp"] = temp;
+    
+    String requestBody;
+    
+    serializeJson(doc, requestBody);
+    
+    //-------------------------------------------------//
+    int httpResponseCode = http.POST(requestBody);
+    if(httpResponseCode>0){
+      String response = http.getString();                       
+      Serial.println(httpResponseCode);   
+      Serial.println(response);
+    }
+    else {
+      Serial.printf("Erro enviando HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
 }
 
 /**
@@ -276,13 +324,15 @@ void setup() {
   tempo = micros();        // definindo o offset do tempo inicial
   mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
 
-  pinMode(BAT,INPUT_PULLUP);
+  pinMode(BAT,INPUT);
+  pinMode(LED, OUTPUT);
   //pinMode(27, OUTPUT);   // Pino definido como output
   //digitalWrite(18, LOW); // Definir para nível lógico baixo
   //digitalWrite(18, HIGH);// Definir para nível lógico alto
 
   Serial.println("Status do WIFI: ");
   Serial.println(status_wifi);
+  digitalWrite(LED, HIGH);
 }
 
 /**
@@ -331,10 +381,38 @@ void loop() {
   //---------------------------------------------------------------------------------
   switch(estado){
     case INICIALIZANDO: 
+      estado = SUBIDA;
       break;
     case TESTE: 
+      Serial.print("estado: ");
+      Serial.print(estado);
+      Serial.print(" alt: ");
+      Serial.print(altitude);
+      Serial.print(" gravidade_local: ");
+      Serial.print(gravidade_local);
+      Serial.print(" analog: ");
+      Serial.print(analogRead(BAT));
+      Serial.print(" bat: ");
+      Serial.print(bateria);
+      Serial.print(" porcent: ");
+      Serial.print(((bateria/3.3)*100.0));
+      for(int i = 0; i < 3; i++){
+        Serial.print(" eix: ");
+        Serial.print(i);
+        Serial.print(" r: ");
+        Serial.print(rotacao[i]);
+        Serial.print(" a: ");
+        Serial.print(aceleracao[i]);
+      }
+      Serial.print(" press: ");
+      Serial.print(pressao);
+      Serial.print(" temp: ");
+      Serial.print(temperatura);
+      Serial.print(" T: ");
+      Serial.println(t_atual);
       break;
     case SUBIDA: 
+      digitalWrite(LED, LOW);
       break;
     case EMERGENCIA: 
       break;
@@ -355,118 +433,43 @@ void loop() {
   /*
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
-    // received a packet
-    Serial.print("Received packet '");
+    // Recebeu o pacote
+    Serial.print("Pacote Recebido! '");
 
-    // read packet
+    // Pacote Lido
     while (LoRa.available()) {
       Serial.print((char)LoRa.read());
     }
 
-    // print RSSI of packet
-    Serial.print("' with RSSI ");
+    // Mostra RSSI do pacote
+    Serial.print("' com RSSI ");
     Serial.println(LoRa.packetRssi());
   }
   */
 
   //----- Rotina de Envio de Mensagens Utilizando o WiFi -----//
-
-  /*if(envia > 2){
-    Serial.print("status: ");
-    Serial.print(!status_msg);
-    Serial.print(" wifi: ");
-    Serial.print(status_wifi);
-    for(int i = 0; i < 3; i++){
-      Serial.print(" eixo: ");
-      Serial.print(i);
-      Serial.print(" r: ");
-      Serial.print(rotacao[i]);
-      Serial.print(" a: ");
-      Serial.print(aceleracao[i]);
-    }
-    Serial.print(" pressao: ");
-    Serial.print(pressao);
-    Serial.print(" temperatura: ");
-    Serial.print(temperatura);
-    Serial.print(" Tempo atual: ");
-    Serial.println(mensagem_tmp);
-    envia = 0;
-  } else {
-    envia++;
-  }*/
-  
   
   if((!status_msg) && (status_wifi)){
-    Serial.print("status: ");
-    Serial.print(!status_msg);
-    Serial.print(" wifi: ");
-    Serial.print(status_wifi);
-    Serial.print(" analogico: ");
-    Serial.print(analogRead(BAT));
-    Serial.print(" bat: ");
-    Serial.print(bateria);
-    Serial.print(" poncentagem: ");
-    Serial.print(((bateria/3.3)*100.0));
-    for(int i = 0; i < 3; i++){
-      Serial.print(" eixo: ");
-      Serial.print(i);
-      Serial.print(" r: ");
-      Serial.print(rotacao[i]);
-      Serial.print(" a: ");
-      Serial.print(aceleracao[i]);
-    }
-    Serial.print(" pressao: ");
-    Serial.print(pressao);
-    Serial.print(" temperatura: ");
-    Serial.print(temperatura);
-    Serial.print(" Tempo atual: ");
-    Serial.println(mensagem_tmp);
     
     Serial.println("Enviando MSG WiFi");
+
+    TransmissaoWifi(
+      serverName,           // Endereço de Envio para o Servidor
+      (int)((bateria/3.3)*100.0), // Porcentagem do nível da bateria
+      (int)temperatura,     // Temperatura
+      (int)pressao,         // Pressão em Pa
+      rotacao[0],      // Rotação em X
+      rotacao[1],      // Rotação em Y
+      rotacao[2],      // Rotação em Z
+      aceleracao[0],   // Aceleração em X
+      aceleracao[1],   // Aceleração em Y
+      aceleracao[2],   // Aceleração em Z
+      10,                   // Tensão
+      10,                   // Corrente
+      0,                    // Radiação
+      0,                    // Luminosidade Ultra Violeta
+      temp.temperature);    // Temperatura da Célula
     
-    HTTPClient http;   
-     
-    http.begin(serverName);  
-    http.addHeader("Content-Type", "application/json");         
-       
-    StaticJsonDocument<384> doc;
-  
-    doc["equipe"] = 1;
-    doc["bateria"] = (int)((bateria/3.3)*100.0);
-    doc["temperatura"] = (int)temperatura;
-    doc["pressao"] = (int)pressao;
-    
-    JsonArray giroscopio = doc.createNestedArray("giroscopio");
-    giroscopio.add((int)rotacao[0]);
-    giroscopio.add((int)rotacao[1]);
-    giroscopio.add((int)rotacao[2]);
-    
-    JsonArray acelerometro = doc.createNestedArray("acelerometro");
-    acelerometro.add((int)aceleracao[0]);
-    acelerometro.add((int)aceleracao[1]);
-    acelerometro.add((int)aceleracao[2]);
-    
-    JsonObject payload = doc.createNestedObject("payload");
-    payload["nome"] = "dourasat";
-    payload["saude"] = "100";
-    payload["radiacao"] = "100";
-    payload["luv"] = "100";
-    payload["temp"] = "100";
-    
-    String requestBody;
-    
-    serializeJson(doc, requestBody);
-    
-    //-------------------------------------------------//
-    int httpResponseCode = http.POST(requestBody);
-    if(httpResponseCode>0){
-      String response = http.getString();                       
-      Serial.println(httpResponseCode);   
-      Serial.println(response);
-    }
-    else {
-      Serial.printf("Error occurred while sending HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
-    }
     status_msg = true;
   }
 }
