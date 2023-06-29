@@ -50,18 +50,21 @@ Adafruit_BMP085 bmp_ext; // Declara o sensor de Pressão Barométrica
 WiFiMulti wifiMulti;     // Declara a biblioteca de multiplas conexões WiFi
 
 const int CS = 2;        // Declara o pino do Chip Select do cartão SD
+const int BAT = 2;       // Pino da bateria
 const char* ssid = "StussiMi9Pro"; // Declara o nome da rede WiFi que irá se conectar
 const char* password_wifi = "1234567890"; // Declara a senha da rede WiFi que irá se conectar
 
 String serverName = "https://obsat.org.br/teste_post/envio.php"; // URL do servidor que irá enviar a requisição POST com os dados
 unsigned long lastTime = 0;
 unsigned long timerDelay = 5000;
+int envia;
 
 double angulo_atual; // Declaração do angulo relativo atual em variável global
 double posicao_atual[3]; // Declaração da posição relativa atual em variavel global
 double velocidade_atual[3]; // Declaração da velocidade relativa atual em variável global
 double velocidade[3]; // Declaração da velocidade anterior relativa em variável global
 unsigned long tempo; // Declaração do tempo anterior
+unsigned long mensagem_tmp; // Tempo do contador de tempo das mensagens
 
 bool status_sd;  // Status do cartão SD
 bool status_mpu; // Status do sensor acelerômetro
@@ -122,30 +125,45 @@ double gravidade_teorica(double altitude){
 
 double getTemperatura(){
   // TODO: retornar a temperatura
+  return 0;
 }
 
 double getHumidade(){
   // TODO: retorna a humidade
+  return 0;
 }
 
 double getPressao(){
   // TODO: retorna a pressão
+  return 0;
 }
 
 double getLuminosidade(){
   // TODO: retorna a luminosidade
+  return 0;
 }
 
-double getGiroscopio(int eixo){
-  // TODO: retorna a angulação
+double getGiroscopio(sensors_event_t sensor, int eixo){
+  switch(eixo){
+    case 0: return sensor.acceleration.x; break;
+    case 1: return sensor.acceleration.y; break;
+    case 2: return sensor.acceleration.z; break;
+    default: return sensor.acceleration.x; break;
+  }
 }
 
-double getAceleracao(int eixo){
-  // TODO: retorna a aceleração
+double getAceleracao(sensors_event_t sensor, int eixo){
+  switch(eixo){
+    case 0: return sensor.gyro.x; break;
+    case 1: return sensor.gyro.y; break;
+    case 2: return sensor.gyro.z; break;
+    default: return sensor.gyro.x; break;
+  }
 }
 
 double getMagnetismo(int eixo){
   // TODO: retorna a força magnética
+  return 0;
 }
 
 /**
@@ -166,10 +184,15 @@ void setup() {
     Serial.print(ssid);
     Serial.print(" com a senha: ");
     Serial.print(password_wifi);
+    status_wifi = false;
+  } else {
+    Serial.print("Conectado à rede WiFi com IP Address: ");
+    Serial.println(WiFi.localIP());
+    status_wifi = true;
   }
-  Serial.print("Conectado à rede WiFi com IP Address: ");
-  Serial.println(WiFi.localIP());
+  
   status_msg = false;
+  envia = 0;
 
   //----- Verificação inicial do Cartão SD -----//
   
@@ -177,6 +200,8 @@ void setup() {
   if (!status_sd) {
     Serial.println("Falha no módulo do cartão SD!");
     delay(100);
+  } else {
+    Serial.println("Cartão SD pronto!");
   }
 
   //----- Verificação inicial do Giroscópio e Acelerômetro -----//
@@ -207,6 +232,7 @@ void setup() {
     //MPU6050_BAND_10_HZ
     //MPU6050_BAND_5_HZ
     mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);
+    Serial.println("Giroscópio e Acelerômetro prontos!");
   }
 
   //----- Verificação inicial do Sensor de Pressão -----//
@@ -215,6 +241,8 @@ void setup() {
   if (!status_bmp) {
     Serial.println("Falha no módulo BMP180!");
     delay(100);
+  } else {
+    Serial.println("Barômetro pronto!");
   }
 
   //----- Inicialização do Módulo LoRa Ai Thinker -----//
@@ -246,10 +274,15 @@ void setup() {
   velocidade[1] = 0;       // zerando a velocidade anterior em y
   velocidade[2] = 0;       // zerando a velocidade anterior em z
   tempo = micros();        // definindo o offset do tempo inicial
+  mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
 
+  pinMode(BAT,INPUT_PULLUP);
   //pinMode(27, OUTPUT);   // Pino definido como output
   //digitalWrite(18, LOW); // Definir para nível lógico baixo
   //digitalWrite(18, HIGH);// Definir para nível lógico alto
+
+  Serial.println("Status do WIFI: ");
+  Serial.println(status_wifi);
 }
 
 /**
@@ -260,23 +293,31 @@ void loop() {
   //                  Rotina de verificação de situação atual
   //---------------------------------------------------------------------------------
   sensors_event_t a, g, temp;
-  double temperatura; // Temperatura: °C
+  mpu.getEvent(&a, &g, &temp);
+  double temperatura = bmp_ext.readTemperature(); // Temperatura: °C
   double humidade = getHumidade(); // Umidade: %HR
-  double pressao = getPressao(); // Pressão: pa
+  double pressao = bmp_ext.readPressure(); // Pressão: pa
   double luminosidade = getLuminosidade(); // Luminosidade: %
   double aceleracao[3]; // Aceleração nos eixos XYZ
   double rotacao[3]; // Rotação nos eixos XYZ
   double magnetometro[3]; // Magnetismo nos eixos XYZ
+  double bateria = ((3.3/1024.0)*analogRead(BAT));
   for(int i = 0; i < 3; i++){
-    aceleracao[i] = getAceleracao(i);    // m/s^2
-    rotacao[i] = getGiroscopio(i);        // graus/s
+    aceleracao[i] = getAceleracao(a, i);    // m/s^2
+    rotacao[i] = getGiroscopio(g, i);        // graus/s
     magnetometro[i] = getMagnetismo(i);   // uT
   }
   double altitude = altitude_teorica(pressao); // Altitude: m
   unsigned long t_atual = micros(); // Tempo atual da execução do arduino em us
   unsigned long t_delta; // Delta de tempo
-  if(t_atual > tempo) t_delta = t_atual-tempo; else t_delta = t_atual+((unsigned long)4294967295-tempo); // Delta tempo entre os ciclos da máquina de estados
+  if(t_atual > tempo) t_delta = t_atual-tempo; 
+  else t_delta = t_atual+((unsigned long)4294967295-tempo); // Delta tempo entre os ciclos da máquina de estados
   tempo = t_atual; // Atualização do tempo
+  mensagem_tmp += t_delta;
+  if(mensagem_tmp >= 10000000){
+    status_msg = false;
+    mensagem_tmp = 0;
+  }
   double gravidade_local = gravidade_teorica(altitude); // Gravidade teórica local
   double v_delta[3]; // Declaração do delta de velocidades
   for(int i = 0; i < 3; i++){
@@ -329,7 +370,60 @@ void loop() {
   */
 
   //----- Rotina de Envio de Mensagens Utilizando o WiFi -----//
-  if(status_msg){
+
+  /*if(envia > 2){
+    Serial.print("status: ");
+    Serial.print(!status_msg);
+    Serial.print(" wifi: ");
+    Serial.print(status_wifi);
+    for(int i = 0; i < 3; i++){
+      Serial.print(" eixo: ");
+      Serial.print(i);
+      Serial.print(" r: ");
+      Serial.print(rotacao[i]);
+      Serial.print(" a: ");
+      Serial.print(aceleracao[i]);
+    }
+    Serial.print(" pressao: ");
+    Serial.print(pressao);
+    Serial.print(" temperatura: ");
+    Serial.print(temperatura);
+    Serial.print(" Tempo atual: ");
+    Serial.println(mensagem_tmp);
+    envia = 0;
+  } else {
+    envia++;
+  }*/
+  
+  
+  if((!status_msg) && (status_wifi)){
+    Serial.print("status: ");
+    Serial.print(!status_msg);
+    Serial.print(" wifi: ");
+    Serial.print(status_wifi);
+    Serial.print(" analogico: ");
+    Serial.print(analogRead(BAT));
+    Serial.print(" bat: ");
+    Serial.print(bateria);
+    Serial.print(" poncentagem: ");
+    Serial.print(((bateria/3.3)*100.0));
+    for(int i = 0; i < 3; i++){
+      Serial.print(" eixo: ");
+      Serial.print(i);
+      Serial.print(" r: ");
+      Serial.print(rotacao[i]);
+      Serial.print(" a: ");
+      Serial.print(aceleracao[i]);
+    }
+    Serial.print(" pressao: ");
+    Serial.print(pressao);
+    Serial.print(" temperatura: ");
+    Serial.print(temperatura);
+    Serial.print(" Tempo atual: ");
+    Serial.println(mensagem_tmp);
+    
+    Serial.println("Enviando MSG WiFi");
+    
     HTTPClient http;   
      
     http.begin(serverName);  
@@ -338,19 +432,19 @@ void loop() {
     StaticJsonDocument<384> doc;
   
     doc["equipe"] = 1;
-    doc["bateria"] = 100;
-    doc["temperatura"] = temperatura;
-    doc["pressao"] = pressao;
+    doc["bateria"] = (int)((bateria/3.3)*100.0);
+    doc["temperatura"] = (int)temperatura;
+    doc["pressao"] = (int)pressao;
     
     JsonArray giroscopio = doc.createNestedArray("giroscopio");
-    giroscopio.add(rotacao[0]);
-    giroscopio.add(rotacao[1]);
-    giroscopio.add(rotacao[2]);
+    giroscopio.add((int)rotacao[0]);
+    giroscopio.add((int)rotacao[1]);
+    giroscopio.add((int)rotacao[2]);
     
     JsonArray acelerometro = doc.createNestedArray("acelerometro");
-    acelerometro.add(aceleracao[0]);
-    acelerometro.add(aceleracao[1]);
-    acelerometro.add(aceleracao[2]);
+    acelerometro.add((int)aceleracao[0]);
+    acelerometro.add((int)aceleracao[1]);
+    acelerometro.add((int)aceleracao[2]);
     
     JsonObject payload = doc.createNestedObject("payload");
     payload["nome"] = "dourasat";
