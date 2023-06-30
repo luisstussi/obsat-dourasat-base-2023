@@ -23,9 +23,9 @@
 
 #define MPU6050_DEVICE_ID 0x68 // Define o valor correto do valor MPU6050_WHO_AM_I
 
-#define LED 2
+#define LED 2 // Pino do Led da Placa do ESP32 DevKit
 
-//----- Pinos de Controle do LoRa -----//
+//----- Pinos de Controle do LoRa - Preparado para Telemetria da Fase 4 -----//
 /*
 #define ss 5 // CHIP SELECT do LoRa - RA02
 #define rst 14 // RESET do LoRa - RA02
@@ -45,11 +45,21 @@ enum EstadoMissao{
   RESGATE        // Estado que o satélite sinaliza para ser resgatado
 };
 
-EstadoMissao estado;     // Declara o estado dos periféricos
-File myFile;             // Delaração do arquivo que será salvo no cartão SD no sistema de arquivos FAT
-Adafruit_MPU6050 mpu;    // Declara o sensor Acelerômetro e Giroscópio
-Adafruit_BMP085 bmp_ext; // Declara o sensor de Pressão Barométrica
-WiFiMulti wifiMulti;     // Declara a biblioteca de multiplas conexões WiFi
+/**
+ * Enumeração direção vertical do satélite
+ */
+enum DirecaoVertical{
+  SUBINDO,          // O satélite está em ascenção
+  PARADO,           // O satélite nem está subindo nem descendo
+  DESCENDO,         // O satélite está descendo
+};
+
+EstadoMissao estado;     // Declara o estado dos periféricos como glogal
+DirecaoVertical direcaov;// Declara a direção vertical do satélite como glogal
+File arquivo;            // Delaração do arquivo que será salvo no cartão SD no sistema de arquivos FAT como glogal
+Adafruit_MPU6050 mpu;    // Declara o sensor Acelerômetro e Giroscópio como glogal
+Adafruit_BMP085 bmp_ext; // Declara o sensor de Pressão Barométrica como glogal
+WiFiMulti wifiMulti;     // Declara instância da biblioteca de multiplas conexões WiFi como glogal
 
 const int CS = 13;       // Declara o pino do Chip Select do cartão SD
 const int BAT = 4;       // Pino da bateria
@@ -61,11 +71,14 @@ unsigned long lastTime = 0;
 unsigned long timerDelay = 5000;
 int envia;
 
+double altitudeAnterior;  // Altitude do ciclo anterior
+double altitudeAcumulada; // Altitude acumulada de vários ciclos
 double angulo_atual; // Declaração do angulo relativo atual em variável global
 double posicao_atual[3]; // Declaração da posição relativa atual em variavel global
 double velocidade_atual[3]; // Declaração da velocidade relativa atual em variável global
 double velocidade[3]; // Declaração da velocidade anterior relativa em variável global
 unsigned long tempo; // Declaração do tempo anterior
+unsigned long contaCiclo; // Contador de ciclos da altitude
 unsigned long mensagem_tmp; // Tempo do contador de tempo das mensagens
 
 bool status_sd;  // Status do cartão SD
@@ -75,35 +88,42 @@ bool status_bmp;  // Status do sensor de pressão
 bool status_msg;  // Status do envio da mensagem
 bool status_wifi;  // Status da conexão wifi
 
+/**
+ * Escreve no arquivo especificado a informação desejada
+ */
 void WriteFile(const char * path, const char * message){
-  myFile = SD.open(path, FILE_WRITE);
-  if (myFile) {
-    Serial.printf("Writing to %s ", path);
-    myFile.println(message);
-    myFile.close(); // close the file:
-    Serial.println("completed.");
+  arquivo = SD.open(path, FILE_WRITE);
+  if (arquivo) {                        // Caso o arquivo exista
+    Serial.printf("Escrevendo no arquivo: %s - ", path);
+    arquivo.println(message);           // Gravando a mensagem no arquivo
+    arquivo.close();                    // fechando o arquivo
+    Serial.println("Sucesso!");
   } 
   else {
-    Serial.println("error opening file ");
-    Serial.println(path);
+    Serial.printf("Erro ao abrir o arquivo: %s\n",path);
   }
 }
 
+/**
+ * Lê o conteúdo do arquivo especificado
+ */
 void ReadFile(const char * path){
-  // open the file for reading:
-  myFile = SD.open(path);
-  if (myFile) {
-     Serial.printf("Reading file from %s\n", path);
-    while (myFile.available()) {
-      Serial.write(myFile.read());
+  arquivo = SD.open(path);
+  if (arquivo) {
+     Serial.printf("Lendo: %s ...\n", path);
+    while (arquivo.available()) {
+      Serial.write(arquivo.read());
     }
-    myFile.close(); // close the file:
+    arquivo.close();
   } 
   else {
-    Serial.println("error opening test.txt");
+    Serial.println("Erro na leitura.txt");
   }
 }
 
+/**
+ * Transmite a mensagem padrão requerida pela OBSAT para o servidor especificado no formato JSON via WiFi utilizando o verbo POST
+ */
 void TransmissaoWifi(String urlServer, int bat, int tmp, int pres, float rx, float ry, float rz, float ax, float ay, float az, float tens, float corr, float rad, float luv, float temp){
     HTTPClient http;   
      
@@ -147,6 +167,7 @@ void TransmissaoWifi(String urlServer, int bat, int tmp, int pres, float rx, flo
     }
     else {
       Serial.printf("Erro enviando HTTP POST: %s\n", http.errorToString(httpResponseCode).c_str());
+      estado = EMERGENCIA;
     }
 }
 
@@ -212,6 +233,13 @@ double getAceleracao(sensors_event_t sensor, int eixo){
 double getMagnetismo(int eixo){
   // TODO: retorna a força magnética
   return 0;
+}
+
+void piscaLED(int tempo){
+  digitalWrite(LED, HIGH);
+  delay(tempo);
+  digitalWrite(LED, LOW);
+  delay(tempo);
 }
 
 /**
@@ -311,6 +339,7 @@ void setup() {
   //----- Inicialização das Variáveis Globais -----//
 
   estado = INICIALIZANDO;  // Seta o estado inicial como iniciando a missão
+  direcaov = PARADO;       // Seta o estado inicial como parado ou estacionado
   angulo_atual = 0;        // zerando o angulo atual
   posicao_atual[0] = 0;    // zerando a posição atual em x
   posicao_atual[1] = 0;    // zerando a posição atual em y
@@ -323,6 +352,9 @@ void setup() {
   velocidade[2] = 0;       // zerando a velocidade anterior em z
   tempo = micros();        // definindo o offset do tempo inicial
   mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
+  altitudeAcumulada = 0;   // zera o acumulador de altitude
+  contaCiclo = 0;          // zera o contador de ciclos da altitude
+  altitudeAnterior = altitude_teorica(bmp_ext.readPressure()); // Define o offset de altitude como a altitude inicial
 
   pinMode(BAT,INPUT);
   pinMode(LED, OUTPUT);
@@ -330,8 +362,6 @@ void setup() {
   //digitalWrite(18, LOW); // Definir para nível lógico baixo
   //digitalWrite(18, HIGH);// Definir para nível lógico alto
 
-  Serial.println("Status do WIFI: ");
-  Serial.println(status_wifi);
   digitalWrite(LED, HIGH);
 }
 
@@ -342,8 +372,8 @@ void loop() {
   //---------------------------------------------------------------------------------
   //                  Rotina de verificação de situação atual
   //---------------------------------------------------------------------------------
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+  sensors_event_t a, g, temp; // Variáveis de Verificação do Giroscópio/Acelerômetro
+  mpu.getEvent(&a, &g, &temp); // Aquisição dos sinais do Giroscópio/Acelerômetro
   double temperatura = bmp_ext.readTemperature(); // Temperatura: °C
   double humidade = getHumidade(); // Umidade: %HR
   double pressao = bmp_ext.readPressure(); // Pressão: pa
@@ -358,16 +388,39 @@ void loop() {
     magnetometro[i] = getMagnetismo(i);   // uT
   }
   double altitude = altitude_teorica(pressao); // Altitude: m
-  unsigned long t_atual = micros(); // Tempo atual da execução do arduino em us
+  double deltaAltitude = altitude-altitudeAnterior; //define o delta de altitude
+  altitudeAnterior = altitude; // Atualiza a altitude anterior
+  
+  unsigned long t_atual = micros(); // Tempo atual da execução do ESP32 em us
   unsigned long t_delta; // Delta de tempo
-  if(t_atual > tempo) t_delta = t_atual-tempo; 
-  else t_delta = t_atual+((unsigned long)4294967295-tempo); // Delta tempo entre os ciclos da máquina de estados
+  if(t_atual > tempo) t_delta = t_atual-tempo;  // Armazena o Delta tempo entre os ciclos do loop
+                 // Delta tempo entre os ciclos da máquina de estados caso
+                 // ocorra estouro de pilha do contador de tempo do ESP32.
+  else t_delta = t_atual+((unsigned long)4294967295-tempo); 
   tempo = t_atual; // Atualização do tempo
-  mensagem_tmp += t_delta;
-  if(mensagem_tmp >= 10000000){
-    status_msg = false;
-    mensagem_tmp = 0;
+  
+  mensagem_tmp += t_delta; // Soma o tempo deccorrido desde a ultima mensagem
+  if(mensagem_tmp >= 10000000){   // Caso tenham se passado 10 segundos
+    status_msg = false;           // Reset do flag de mensagem da telemetria
+    mensagem_tmp = 0;             // Zera o contador de tempo de mensagem
   }
+
+  altitudeAcumulada += deltaAltitude; // Soma a altitude deccorrida desde o ultimo ciclo
+  contaCiclo += t_delta;              // Soma o tempo da altitude
+  if(altitudeAcumulada >= 20.0 && contaCiclo < 20000000){   // Caso tenham se passado 20 metros ou 50 
+    altitudeAcumulada = 0;            // Reset do flag de mensagem da telemetria
+    contaCiclo = 0;                   // Zera o contador de ciclos de mensagem
+    direcaov = SUBINDO;               // O satélite está subindo
+  } else if(altitudeAcumulada <= -20.0 && contaCiclo < 20000000){
+    altitudeAcumulada = 0;            // Reset do flag de mensagem da telemetria
+    contaCiclo = 0;                   // Zera o contador de ciclos de mensagem
+    direcaov = DESCENDO;              // O satélite está descendo
+  } else if(contaCiclo >= 20000000){
+    altitudeAcumulada = 0;            // Reset do flag de mensagem da telemetria
+    contaCiclo = 0;                   // Zera o contador de ciclos de mensagem
+    direcaov = PARADO;                // O satélite está parado
+  }
+  
   double gravidade_local = gravidade_teorica(altitude); // Gravidade teórica local
   double v_delta[3]; // Declaração do delta de velocidades
   for(int i = 0; i < 3; i++){
@@ -381,9 +434,18 @@ void loop() {
   //---------------------------------------------------------------------------------
   switch(estado){
     case INICIALIZANDO: 
-      estado = SUBIDA;
+      if(direcaov == SUBINDO) estado = SUBIDA; // Caso o satélite esteja subindo muda para o estado subindo
+      else if(direcaov == DESCENDO) estado = DESCIDA; // Caso o satélite esteja descendo muda para o estado descida
+      else if(direcaov == PARADO && altitude <= 800) { // Caso o satélite esteja parado no chão ou próximo do chão
+        //Rotina de inicialização para o lançamento recolhendo as partes móveis e aguardando a subida
+      }
       break;
     case TESTE: 
+      //----------------------------------------------------------------------------
+      //         Rotina especial de testes do sistema do satélite
+      //----------------------------------------------------------------------------
+      // A rotina de testes informa todos os 
+      // valores da variáveis através da serial
       Serial.print("estado: ");
       Serial.print(estado);
       Serial.print(" alt: ");
@@ -413,63 +475,149 @@ void loop() {
       break;
     case SUBIDA: 
       digitalWrite(LED, LOW);
+
+      //----- Rotina de Envio de Mensagens Utilizando o Long Range (LoRa) Radio - Preparado para Telemetria da Fase 4 -----//
+      /*
+      int packetSize = LoRa.parsePacket();
+      if (packetSize) {
+        // Recebeu o pacote
+        Serial.print("Pacote Recebido! '");
+    
+        // Pacote Lido
+        while (LoRa.available()) {
+          Serial.print((char)LoRa.read());
+        }
+    
+        // Mostra RSSI (força do sinal recebido) do pacote
+        Serial.print("' com RSSI ");
+        Serial.println(LoRa.packetRssi());
+      }
+      */
+      
+      //----- Rotina de Envio de Mensagens Utilizando o WiFi -----//
+      if((!status_msg) && (status_wifi)){ // Condição para mandar a mensagem a cada 10 Segundos
+        
+        Serial.println("Enviando MSG WiFi");
+    
+        TransmissaoWifi(
+          serverName,           // Endereço de Envio para o Servidor
+          (int)((bateria/3.3)*100.0), // Porcentagem do nível da bateria
+          (int)temperatura,     // Temperatura
+          (int)pressao,         // Pressão em Pa
+          rotacao[0],      // Rotação em X
+          rotacao[1],      // Rotação em Y
+          rotacao[2],      // Rotação em Z
+          aceleracao[0],   // Aceleração em X
+          aceleracao[1],   // Aceleração em Y
+          aceleracao[2],   // Aceleração em Z
+          10,                   // Tensão
+          10,                   // Corrente
+          0,                    // Radiação
+          0,                    // Luminosidade Ultra Violeta
+          temp.temperature);    // Temperatura da Célula
+        
+        status_msg = true;
+      }
+      if(altitude >= 2000) estado = EXECUCAO;
       break;
     case EMERGENCIA: 
+      // Reconfere todos os subsistemas e reinicia o satélite
+      Serial.begin(115200);   // Inicia a comunicação serial 1 que comunica com o conversor USB/Serial
+      Serial2.begin(115200);   // Inicia a comunicação serial 2 que comunica com o módulo GSM/GPS/GPRS
+      wifiMulti.addAP(ssid, password_wifi); // Conectando à rede WiFi
+      if (wifiMulti.run() != WL_CONNECTED) status_wifi = false; // Caso não consiga conectar marca a flag falsa
+      else status_wifi = true;                                  // Caso contrário marca a flag verdadeira
+      status_sd = SD.begin(CS);     // Reinicialização do cartão de memória
+      status_mpu = mpu.begin(0x68); // Reinicialização do Acelerômetro/Giroscópio
+      if (status_mpu) {
+        mpu.setAccelerometerRange(MPU6050_RANGE_2_G); // Range do Acelerômetro para 2G
+        mpu.setGyroRange(MPU6050_RANGE_250_DEG);      // Range do Giroscópio para 250 Deg/s
+        mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);    // Filtro de Banda < 5 Hz (corta baixa)
+      }
+      status_bmp = bmp_ext.begin(0x77); // Reinicialização do Barômetro
+      estado = INICIALIZANDO;  // Estado inicial Reiniciando
+      direcaov = PARADO;       // Movimentação parado ou estacionado
+      angulo_atual = 0;        // zerando o angulo atual
+      posicao_atual[0] = 0;    // zerando a posição atual em x
+      posicao_atual[1] = 0;    // zerando a posição atual em y
+      posicao_atual[2] = 0;    // zerando a posição atual em z
+      velocidade_atual[0] = 0; // zerando a velocidade atual em x
+      velocidade_atual[1] = 0; // zerando a velocidade atual em y
+      velocidade_atual[2] = 0; // zerando a velocidade atual em z
+      velocidade[0] = 0;       // zerando a velocidade anterior em x
+      velocidade[1] = 0;       // zerando a velocidade anterior em y
+      velocidade[2] = 0;       // zerando a velocidade anterior em z
+      tempo = micros();        // definindo o offset do tempo inicial
+      mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
+      altitudeAcumulada = 0;   // zera o acumulador de altitude
+      contaCiclo = 0;          // zera o contador de ciclos da altitude
+      altitudeAnterior = altitude_teorica(bmp_ext.readPressure()); // Define o offset de altitude como a altitude inicial
       break;
     case EXECUCAO: 
+      digitalWrite(LED, LOW);
+
+      //----- Rotina de Envio de Mensagens Utilizando o Long Range (LoRa) Radio - Preparado para Telemetria da Fase 4 -----//
+      /*
+      int packetSize = LoRa.parsePacket();
+      if (packetSize) {
+        // Recebeu o pacote
+        Serial.print("Pacote Recebido! '");
+    
+        // Pacote Lido
+        while (LoRa.available()) {
+          Serial.print((char)LoRa.read());
+        }
+    
+        // Mostra RSSI (força do sinal recebido) do pacote
+        Serial.print("' com RSSI ");
+        Serial.println(LoRa.packetRssi());
+      }
+      */
+      
+      //----- Rotina de Envio de Mensagens Utilizando o WiFi -----//
+      if((!status_msg) && (status_wifi)){ // Condição para mandar a mensagem a cada 10 Segundos
+        
+        Serial.println("Enviando MSG WiFi");
+    
+        TransmissaoWifi(
+          serverName,           // Endereço de Envio para o Servidor
+          (int)((bateria/3.3)*100.0), // Porcentagem do nível da bateria
+          (int)temperatura,     // Temperatura
+          (int)pressao,         // Pressão em Pa
+          rotacao[0],      // Rotação em X
+          rotacao[1],      // Rotação em Y
+          rotacao[2],      // Rotação em Z
+          aceleracao[0],   // Aceleração em X
+          aceleracao[1],   // Aceleração em Y
+          aceleracao[2],   // Aceleração em Z
+          10,                   // Tensão
+          10,                   // Corrente
+          0,                    // Radiação
+          0,                    // Luminosidade Ultra Violeta
+          temp.temperature);    // Temperatura da Célula
+        
+        status_msg = true;
+      }
+      if(altitude >= 2000) estado = EXECUCAO;
       break;
-    case DESCIDA: 
+    case DESCIDA:
+      // Recolhe todas as partes móveis e se propara para o pouso
+      piscaLED(100);
       break;
     case RESGATE: 
+      // No resgate aciona as luzes para facilitar a identificação do satélite
+      piscaLED(500);
       break;
     default: 
+      Serial.println("Erro ao especificar o estado!");
+      estado = EMERGENCIA;
       break;
   }
   //---------------------------------------------------------------------------------
   //         Rotinas de reorganização das variáveis incrementais
   //---------------------------------------------------------------------------------
   
-  //----- Rotina de Envio de Mensagens Utilizando o Long Range (LoRa) Radio -----//
-  /*
-  int packetSize = LoRa.parsePacket();
-  if (packetSize) {
-    // Recebeu o pacote
-    Serial.print("Pacote Recebido! '");
-
-    // Pacote Lido
-    while (LoRa.available()) {
-      Serial.print((char)LoRa.read());
-    }
-
-    // Mostra RSSI do pacote
-    Serial.print("' com RSSI ");
-    Serial.println(LoRa.packetRssi());
-  }
-  */
-
-  //----- Rotina de Envio de Mensagens Utilizando o WiFi -----//
   
-  if((!status_msg) && (status_wifi)){
-    
-    Serial.println("Enviando MSG WiFi");
 
-    TransmissaoWifi(
-      serverName,           // Endereço de Envio para o Servidor
-      (int)((bateria/3.3)*100.0), // Porcentagem do nível da bateria
-      (int)temperatura,     // Temperatura
-      (int)pressao,         // Pressão em Pa
-      rotacao[0],      // Rotação em X
-      rotacao[1],      // Rotação em Y
-      rotacao[2],      // Rotação em Z
-      aceleracao[0],   // Aceleração em X
-      aceleracao[1],   // Aceleração em Y
-      aceleracao[2],   // Aceleração em Z
-      10,                   // Tensão
-      10,                   // Corrente
-      0,                    // Radiação
-      0,                    // Luminosidade Ultra Violeta
-      temp.temperature);    // Temperatura da Célula
-    
-    status_msg = true;
-  }
+  
 }
