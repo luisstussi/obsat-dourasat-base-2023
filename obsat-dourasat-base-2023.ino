@@ -23,7 +23,15 @@
 
 #define MPU6050_DEVICE_ID 0x68 // Define o valor correto do valor MPU6050_WHO_AM_I
 
-#define LED 2 // Pino do Led da Placa do ESP32 DevKit
+#define LED 2   // Pino do Led da Placa do ESP32 DevKit
+#define ENSD 13 // Pino de enable do SD Card
+#define PLUV 12 // Pino de entrada do módulo Luz Ultra Violeta
+#define NTC 14  // Pino de aquisição do sensor de temperatura
+#define LDR 27  // Pino de aquisição do sensor de luminosidade
+#define CCM 26  // Pino de aquisição da Célula Combustível Microbiana
+#define BMB 33  // Pino de acionamento da microbomba da Célula Combustível Microbiana
+#define CEM 32  // Pino de acionamento da Célula de Eletrosíntese Microbiana
+#define VAL 35  // Pino de acionamento da Válvula de Comunicação dos Sistemas Bioeletroquímicos
 
 //----- Pinos de Controle do LoRa - Preparado para Telemetria da Fase 4 -----//
 /*
@@ -193,7 +201,6 @@ double gravidade_teorica(double altitude){
 }
 
 double getTemperatura(){
-  // TODO: retornar a temperatura
   return 0;
 }
 
@@ -357,7 +364,16 @@ void setup() {
   altitudeAnterior = altitude_teorica(bmp_ext.readPressure()); // Define o offset de altitude como a altitude inicial
 
   pinMode(BAT,INPUT);
+  pinMode(NTC,INPUT);
   pinMode(LED, OUTPUT);
+  pinMode(PLUV, INPUT); // Pino de entrada do módulo Luz Ultra Violeta
+  pinMode(LDR, INPUT);  // Pino de aquisição do sensor de luminosidade
+  pinMode(CCM, INPUT);  // Pino de aquisição da Célula Combustível Microbiana
+  pinMode(ENSD, OUTPUT); // Pino de enable do SD Card
+  pinMode(BMB, OUTPUT);  // Pino de acionamento da microbomba da Célula Combustível Microbiana
+  pinMode(CEM, OUTPUT);  // Pino de acionamento da Célula de Eletrosíntese Microbiana
+  pinMode(VAL, OUTPUT);  // Pino de acionamento da Válvula de Comunicação dos Sistemas Bioeletroquímicos
+
   //pinMode(27, OUTPUT);   // Pino definido como output
   //digitalWrite(18, LOW); // Definir para nível lógico baixo
   //digitalWrite(18, HIGH);// Definir para nível lógico alto
