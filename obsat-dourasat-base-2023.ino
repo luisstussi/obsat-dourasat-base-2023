@@ -2,7 +2,7 @@
 
 #include <Adafruit_MPU6050.h> 
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BMP085.h>
+#include <Adafruit_BME280.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <WiFiMulti.h>
@@ -13,6 +13,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include "math.h"
+#include "DHT.h"
 
 //----- Definição das constantes de cálculo -----//
 
@@ -22,16 +23,18 @@
 #define MASS 5.972e24 // Massa da terra
 
 #define MPU6050_DEVICE_ID 0x68 // Define o valor correto do valor MPU6050_WHO_AM_I
+#define DHTTYPE DHT11 // Tipo do dispositivo de aquisição de humidade
 
 #define LED 2   // Pino do Led da Placa do ESP32 DevKit
 #define ENSD 13 // Pino de enable do SD Card
 #define PLUV 12 // Pino de entrada do módulo Luz Ultra Violeta
-#define NTC 14  // Pino de aquisição do sensor de temperatura
-#define LDR 27  // Pino de aquisição do sensor de luminosidade
+#define NTC 34  // Pino de aquisição do sensor de temperatura
+#define LDR 35  // Pino de aquisição do sensor de luminosidade
+#define DHP 14  // Pino de aquisição do sensor de humidade
 #define CCM 26  // Pino de aquisição da Célula Combustível Microbiana
 #define BMB 33  // Pino de acionamento da microbomba da Célula Combustível Microbiana
 #define CEM 32  // Pino de acionamento da Célula de Eletrosíntese Microbiana
-#define VAL 35  // Pino de acionamento da Válvula de Comunicação dos Sistemas Bioeletroquímicos
+#define VAL 27  // Pino de acionamento da Válvula de Comunicação dos Sistemas Bioeletroquímicos
 
 //----- Pinos de Controle do LoRa - Preparado para Telemetria da Fase 4 -----//
 /*
@@ -66,8 +69,9 @@ EstadoMissao estado;     // Declara o estado dos periféricos como glogal
 DirecaoVertical direcaov;// Declara a direção vertical do satélite como glogal
 File arquivo;            // Delaração do arquivo que será salvo no cartão SD no sistema de arquivos FAT como glogal
 Adafruit_MPU6050 mpu;    // Declara o sensor Acelerômetro e Giroscópio como glogal
-Adafruit_BMP085 bmp_ext; // Declara o sensor de Pressão Barométrica como glogal
+Adafruit_BME280 bmp_ext; // Declara o sensor de Pressão Barométrica como glogal
 WiFiMulti wifiMulti;     // Declara instância da biblioteca de multiplas conexões WiFi como glogal
+DHT dht(DHP, DHTTYPE);// 
 
 const int CS = 13;       // Declara o pino do Chip Select do cartão SD
 const int BAT = 4;       // Pino da bateria
@@ -201,12 +205,13 @@ double gravidade_teorica(double altitude){
 }
 
 double getTemperatura(){
-  return 0;
+  float t = dht.readTemperature();
+  return (double)t;
 }
 
 double getHumidade(){
-  // TODO: retorna a humidade
-  return 0;
+  float h = dht.readHumidity();
+  return (double)h;
 }
 
 double getPressao(){
@@ -215,8 +220,8 @@ double getPressao(){
 }
 
 double getLuminosidade(){
-  // TODO: retorna a luminosidade
-  return 0;
+  int potValue = analogRead(LDR);
+  return (double)potValue;
 }
 
 double getGiroscopio(sensors_event_t sensor, int eixo){
@@ -286,7 +291,7 @@ void setup() {
   } else {
     Serial.println("Cartão SD pronto!");
   }
-
+  WriteFile("/OBSAT_DouraSat.txt", "estado, altitude, analógico, bateria, porcentagem, rotação X [rad/s], aceleração X [m/s^2], rotação Y [rad/s], aceleração Y [m/s^2], pressão[Pa], rotação Z [rad/s], aceleração Z [m/s^2], temperatura[°C], humidade[%rt], luminosidade[lux], Tempo[us]");
   //----- Verificação inicial do Giroscópio e Acelerômetro -----//
   
   status_mpu = mpu.begin(0x68);
@@ -320,13 +325,17 @@ void setup() {
 
   //----- Verificação inicial do Sensor de Pressão -----//
   
-  status_bmp = bmp_ext.begin(0x77);
+  status_bmp = bmp_ext.begin(0x76);
   if (!status_bmp) {
-    Serial.println("Falha no módulo BMP180!");
+    Serial.println("Falha no módulo BME280!");
     delay(100);
   } else {
     Serial.println("Barômetro pronto!");
   }
+
+  //----- Verificação inicial do Sensor de Humidade -----//
+
+  dht.begin();
 
   //----- Inicialização do Módulo LoRa Ai Thinker -----//
   
@@ -345,7 +354,7 @@ void setup() {
 
   //----- Inicialização das Variáveis Globais -----//
 
-  estado = INICIALIZANDO;  // Seta o estado inicial como iniciando a missão
+  estado = TESTE;  // Seta o estado inicial como iniciando a missão
   direcaov = PARADO;       // Seta o estado inicial como parado ou estacionado
   angulo_atual = 0;        // zerando o angulo atual
   posicao_atual[0] = 0;    // zerando a posição atual em x
@@ -390,7 +399,7 @@ void loop() {
   //---------------------------------------------------------------------------------
   sensors_event_t a, g, temp; // Variáveis de Verificação do Giroscópio/Acelerômetro
   mpu.getEvent(&a, &g, &temp); // Aquisição dos sinais do Giroscópio/Acelerômetro
-  double temperatura = bmp_ext.readTemperature(); // Temperatura: °C
+  double temperatura = temp.temperature; // Temperatura: °C
   double humidade = getHumidade(); // Umidade: %HR
   double pressao = bmp_ext.readPressure(); // Pressão: pa
   double luminosidade = getLuminosidade(); // Luminosidade: %
@@ -421,7 +430,7 @@ void loop() {
     mensagem_tmp = 0;             // Zera o contador de tempo de mensagem
   }
 
-  altitudeAcumulada += deltaAltitude; // Soma a altitude deccorrida desde o ultimo ciclo
+  /*altitudeAcumulada += deltaAltitude; // Soma a altitude deccorrida desde o ultimo ciclo
   contaCiclo += t_delta;              // Soma o tempo da altitude
   if(altitudeAcumulada >= 20.0 && contaCiclo < 20000000){   // Caso tenham se passado 20 metros ou 50 
     altitudeAcumulada = 0;            // Reset do flag de mensagem da telemetria
@@ -435,7 +444,9 @@ void loop() {
     altitudeAcumulada = 0;            // Reset do flag de mensagem da telemetria
     contaCiclo = 0;                   // Zera o contador de ciclos de mensagem
     direcaov = PARADO;                // O satélite está parado
-  }
+  }*/
+
+  
   
   double gravidade_local = gravidade_teorica(altitude); // Gravidade teórica local
   double v_delta[3]; // Declaração do delta de velocidades
@@ -445,6 +456,15 @@ void loop() {
     velocidade[i] = velocidade_atual[i]; // Atualizando a velocidade
     posicao_atual[i] = v_delta[i]*t_delta; // Posição relativa atual
   }
+  
+  //---------------------------------------------------------------------------------
+  //         Rotinas de Gravação no Cartão SD
+  //---------------------------------------------------------------------------------
+  //char buffer[400];
+
+  //sprintf(buffer, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",a,estado,altitude,analogRead(BAT),bateria,((bateria/3.3)*100.0),rotacao[0],aceleracao[0],rotacao[1],aceleracao[1],rotacao[2],aceleracao[2],pressao,temperatura,humidade,luminosidade,t_atual);
+  
+  //WriteFile("OBSAT_DouraSat.txt", buffer);
   //---------------------------------------------------------------------------------
   //         Rotinas de seleção de estados da missão
   //---------------------------------------------------------------------------------
@@ -466,28 +486,32 @@ void loop() {
       Serial.print(estado);
       Serial.print(" alt: ");
       Serial.print(altitude);
-      Serial.print(" gravidade_local: ");
-      Serial.print(gravidade_local);
       Serial.print(" analog: ");
       Serial.print(analogRead(BAT));
       Serial.print(" bat: ");
       Serial.print(bateria);
-      Serial.print(" porcent: ");
+      Serial.print(" porc: ");
       Serial.print(((bateria/3.3)*100.0));
       for(int i = 0; i < 3; i++){
         Serial.print(" eix: ");
         Serial.print(i);
-        Serial.print(" r: ");
+        Serial.print(",");
         Serial.print(rotacao[i]);
-        Serial.print(" a: ");
+        Serial.print(",");
         Serial.print(aceleracao[i]);
       }
+      Serial.println("");
       Serial.print(" press: ");
       Serial.print(pressao);
       Serial.print(" temp: ");
       Serial.print(temperatura);
+      Serial.print(" hum: ");
+      Serial.print(humidade);
+      Serial.print(" lum: ");
+      Serial.print(luminosidade);
       Serial.print(" T: ");
       Serial.println(t_atual);
+      delay(1000);
       break;
     case SUBIDA: 
       digitalWrite(LED, LOW);
@@ -551,7 +575,7 @@ void loop() {
         mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);    // Filtro de Banda < 5 Hz (corta baixa)
       }
       status_bmp = bmp_ext.begin(0x77); // Reinicialização do Barômetro
-      estado = INICIALIZANDO;  // Estado inicial Reiniciando
+      estado = TESTE;  // Estado inicial Reiniciando
       direcaov = PARADO;       // Movimentação parado ou estacionado
       angulo_atual = 0;        // zerando o angulo atual
       posicao_atual[0] = 0;    // zerando a posição atual em x
