@@ -2,7 +2,7 @@
 
 #include <Adafruit_MPU6050.h> 
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BME280.h>
+#include <Adafruit_BMP280.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <WiFiMulti.h>
@@ -26,6 +26,7 @@
 #define DHTTYPE DHT11 // Tipo do dispositivo de aquisição de humidade
 
 #define LED 2   // Pino do Led da Placa do ESP32 DevKit
+#define PWM 5   // Pino do Conversor Boost de 5 V
 #define ENSD 13 // Pino de enable do SD Card
 #define PLUV 12 // Pino de entrada do módulo Luz Ultra Violeta
 #define NTC 34  // Pino de aquisição do sensor de temperatura
@@ -33,8 +34,9 @@
 #define DHP 14  // Pino de aquisição do sensor de humidade
 #define CCM 26  // Pino de aquisição da Célula Combustível Microbiana
 #define BMB 33  // Pino de acionamento da microbomba da Célula Combustível Microbiana
-#define CEM 32  // Pino de acionamento da Célula de Eletrosíntese Microbiana
+#define CEM 39  // Pino de acionamento da Célula de Eletrosíntese Microbiana
 #define VAL 27  // Pino de acionamento da Válvula de Comunicação dos Sistemas Bioeletroquímicos
+#define BAT 32  // Pino da bateria
 
 //----- Pinos de Controle do LoRa - Preparado para Telemetria da Fase 4 -----//
 /*
@@ -69,12 +71,11 @@ EstadoMissao estado;     // Declara o estado dos periféricos como glogal
 DirecaoVertical direcaov;// Declara a direção vertical do satélite como glogal
 File arquivo;            // Delaração do arquivo que será salvo no cartão SD no sistema de arquivos FAT como glogal
 Adafruit_MPU6050 mpu;    // Declara o sensor Acelerômetro e Giroscópio como glogal
-Adafruit_BME280 bmp_ext; // Declara o sensor de Pressão Barométrica como glogal
+Adafruit_BMP280 bmp; // Declara o sensor de Pressão Barométrica como glogal
 WiFiMulti wifiMulti;     // Declara instância da biblioteca de multiplas conexões WiFi como glogal
 DHT dht(DHP, DHTTYPE);// 
 
 const int CS = 13;       // Declara o pino do Chip Select do cartão SD
-const int BAT = 4;       // Pino da bateria
 const char* ssid = "StussiMi9Pro"; // Declara o nome da rede WiFi que irá se conectar
 const char* password_wifi = "1234567890"; // Declara a senha da rede WiFi que irá se conectar
 
@@ -104,7 +105,7 @@ bool status_wifi;  // Status da conexão wifi
  * Escreve no arquivo especificado a informação desejada
  */
 void WriteFile(const char * path, const char * message){
-  arquivo = SD.open(path, FILE_WRITE);
+  arquivo = SD.open(path, FILE_APPEND);
   if (arquivo) {                        // Caso o arquivo exista
     Serial.printf("Escrevendo no arquivo: %s - ", path);
     arquivo.println(message);           // Gravando a mensagem no arquivo
@@ -258,6 +259,11 @@ void piscaLED(int tempo){
  * Rotina de inicialização do satélite
  */
 void setup() {
+  //----- Inicialização do PWM do Conversor BOOST - 5V -----//
+
+  analogWriteResolution(8); // set resolution to 10 bits for all pins
+  analogWriteFrequency(1200); // set frequency to 10 KHz for LED pin
+  analogWrite(PWM, 122); // Duty Cycle para converter 3.7 V em 5 V
 
   //----- Inicialização das Interfaces de Comunicação Seriais -----//
   
@@ -325,7 +331,7 @@ void setup() {
 
   //----- Verificação inicial do Sensor de Pressão -----//
   
-  status_bmp = bmp_ext.begin(0x76);
+  status_bmp = bmp.begin(0x76);
   if (!status_bmp) {
     Serial.println("Falha no módulo BME280!");
     delay(100);
@@ -354,7 +360,7 @@ void setup() {
 
   //----- Inicialização das Variáveis Globais -----//
 
-  estado = TESTE;  // Seta o estado inicial como iniciando a missão
+  estado = SUBIDA;  // Seta o estado inicial como iniciando a missão
   direcaov = PARADO;       // Seta o estado inicial como parado ou estacionado
   angulo_atual = 0;        // zerando o angulo atual
   posicao_atual[0] = 0;    // zerando a posição atual em x
@@ -370,7 +376,7 @@ void setup() {
   mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
   altitudeAcumulada = 0;   // zera o acumulador de altitude
   contaCiclo = 0;          // zera o contador de ciclos da altitude
-  altitudeAnterior = altitude_teorica(bmp_ext.readPressure()); // Define o offset de altitude como a altitude inicial
+  altitudeAnterior = altitude_teorica(bmp.readPressure()); // Define o offset de altitude como a altitude inicial
 
   pinMode(BAT,INPUT);
   pinMode(NTC,INPUT);
@@ -397,11 +403,12 @@ void loop() {
   //---------------------------------------------------------------------------------
   //                  Rotina de verificação de situação atual
   //---------------------------------------------------------------------------------
+  char buffer[600];
   sensors_event_t a, g, temp; // Variáveis de Verificação do Giroscópio/Acelerômetro
   mpu.getEvent(&a, &g, &temp); // Aquisição dos sinais do Giroscópio/Acelerômetro
   double temperatura = temp.temperature; // Temperatura: °C
   double humidade = getHumidade(); // Umidade: %HR
-  double pressao = bmp_ext.readPressure(); // Pressão: pa
+  float pressao = bmp.readPressure(); // Pressão: pa
   double luminosidade = getLuminosidade(); // Luminosidade: %
   double aceleracao[3]; // Aceleração nos eixos XYZ
   double rotacao[3]; // Rotação nos eixos XYZ
@@ -458,23 +465,15 @@ void loop() {
   }
   
   //---------------------------------------------------------------------------------
-  //         Rotinas de Gravação no Cartão SD
-  //---------------------------------------------------------------------------------
-  //char buffer[400];
-
-  //sprintf(buffer, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",a,estado,altitude,analogRead(BAT),bateria,((bateria/3.3)*100.0),rotacao[0],aceleracao[0],rotacao[1],aceleracao[1],rotacao[2],aceleracao[2],pressao,temperatura,humidade,luminosidade,t_atual);
-  
-  //WriteFile("OBSAT_DouraSat.txt", buffer);
-  //---------------------------------------------------------------------------------
   //         Rotinas de seleção de estados da missão
   //---------------------------------------------------------------------------------
   switch(estado){
     case INICIALIZANDO: 
-      if(direcaov == SUBINDO) estado = SUBIDA; // Caso o satélite esteja subindo muda para o estado subindo
-      else if(direcaov == DESCENDO) estado = DESCIDA; // Caso o satélite esteja descendo muda para o estado descida
-      else if(direcaov == PARADO && altitude <= 800) { // Caso o satélite esteja parado no chão ou próximo do chão
+      //if(direcaov == SUBINDO) estado = SUBIDA; // Caso o satélite esteja subindo muda para o estado subindo
+      //else if(direcaov == DESCENDO) estado = DESCIDA; // Caso o satélite esteja descendo muda para o estado descida
+      //else if(direcaov == PARADO && altitude <= 800) { // Caso o satélite esteja parado no chão ou próximo do chão
         //Rotina de inicialização para o lançamento recolhendo as partes móveis e aguardando a subida
-      }
+      //}
       break;
     case TESTE: 
       //----------------------------------------------------------------------------
@@ -482,36 +481,8 @@ void loop() {
       //----------------------------------------------------------------------------
       // A rotina de testes informa todos os 
       // valores da variáveis através da serial
-      Serial.print("estado: ");
-      Serial.print(estado);
-      Serial.print(" alt: ");
-      Serial.print(altitude);
-      Serial.print(" analog: ");
-      Serial.print(analogRead(BAT));
-      Serial.print(" bat: ");
-      Serial.print(bateria);
-      Serial.print(" porc: ");
-      Serial.print(((bateria/3.3)*100.0));
-      for(int i = 0; i < 3; i++){
-        Serial.print(" eix: ");
-        Serial.print(i);
-        Serial.print(",");
-        Serial.print(rotacao[i]);
-        Serial.print(",");
-        Serial.print(aceleracao[i]);
-      }
-      Serial.println("");
-      Serial.print(" press: ");
-      Serial.print(pressao);
-      Serial.print(" temp: ");
-      Serial.print(temperatura);
-      Serial.print(" hum: ");
-      Serial.print(humidade);
-      Serial.print(" lum: ");
-      Serial.print(luminosidade);
-      Serial.print(" T: ");
-      Serial.println(t_atual);
-      delay(1000);
+      sprintf(buffer, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",a,estado,altitude,analogRead(BAT),bateria,((bateria/3.3)*100.0),rotacao[0],aceleracao[0],rotacao[1],aceleracao[1],rotacao[2],aceleracao[2],bmp.readPressure(),temperatura,humidade,luminosidade,t_atual);
+      Serial.print(buffer);
       break;
     case SUBIDA: 
       digitalWrite(LED, LOW);
@@ -557,8 +528,21 @@ void loop() {
           temp.temperature);    // Temperatura da Célula
         
         status_msg = true;
+        
       }
-      if(altitude >= 2000) estado = EXECUCAO;
+      if(!status_msg){
+        //---------------------------------------------------------------------------------
+        //         Rotinas de Gravação no Cartão SD
+        //---------------------------------------------------------------------------------
+        
+        sprintf(buffer, "%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d\n",a,estado,altitude,analogRead(BAT),bateria,((bateria/3.3)*100.0),rotacao[0],aceleracao[0],rotacao[1],aceleracao[1],rotacao[2],aceleracao[2],bmp.readPressure(),temperatura,humidade,luminosidade,t_atual);
+        Serial.print(buffer);
+        sprintf(buffer, "%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d",a,estado,altitude,analogRead(BAT),bateria,((bateria/3.3)*100.0),rotacao[0],aceleracao[0],rotacao[1],aceleracao[1],rotacao[2],aceleracao[2],bmp.readPressure(),temperatura,humidade,luminosidade,t_atual);
+        WriteFile("/OBSAT_DouraSat.txt", buffer);
+
+        status_msg = true;
+      }
+      //if(altitude >= 2000) estado = EXECUCAO;
       break;
     case EMERGENCIA: 
       // Reconfere todos os subsistemas e reinicia o satélite
@@ -574,7 +558,7 @@ void loop() {
         mpu.setGyroRange(MPU6050_RANGE_250_DEG);      // Range do Giroscópio para 250 Deg/s
         mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);    // Filtro de Banda < 5 Hz (corta baixa)
       }
-      status_bmp = bmp_ext.begin(0x77); // Reinicialização do Barômetro
+      status_bmp = bmp.begin(0x76); // Reinicialização do Barômetro
       estado = TESTE;  // Estado inicial Reiniciando
       direcaov = PARADO;       // Movimentação parado ou estacionado
       angulo_atual = 0;        // zerando o angulo atual
@@ -591,7 +575,7 @@ void loop() {
       mensagem_tmp = 0;        // zera o contador de tempo para mandar mensagens
       altitudeAcumulada = 0;   // zera o acumulador de altitude
       contaCiclo = 0;          // zera o contador de ciclos da altitude
-      altitudeAnterior = altitude_teorica(bmp_ext.readPressure()); // Define o offset de altitude como a altitude inicial
+      altitudeAnterior = altitude_teorica(bmp.readPressure()); // Define o offset de altitude como a altitude inicial
       break;
     case EXECUCAO: 
       digitalWrite(LED, LOW);
